@@ -48,6 +48,11 @@ if "employees" not in st.session_state:
 if "exit_records" not in st.session_state:
     st.session_state.exit_records = []
 
+# Important:
+# This flag is used to reset the employee form safely.
+if "employee_form_reset" not in st.session_state:
+    st.session_state.employee_form_reset = False
+
 
 # ============================================================
 # HELPERS
@@ -57,13 +62,24 @@ def clean_number(value: Any) -> int:
     """Convert a value to a non-negative integer."""
 
     try:
+        if pd.isna(value):
+            return 0
+    except Exception:
+        pass
+
+    try:
         return max(0, int(float(value)))
     except (ValueError, TypeError):
         return 0
 
 
 def clean_uan(value: Any) -> str:
-    """Clean UAN value safely, including Excel .0 values."""
+    """
+    Clean UAN value safely.
+
+    Handles Excel values such as:
+        123456789012.0
+    """
 
     if value is None:
         return ""
@@ -93,9 +109,14 @@ def calculate_employee(
     epf_wages: float,
     ncp_days: int,
     refund: float,
-):
+) -> dict:
     """
     Calculate employee contribution values.
+
+    NOTE:
+    These calculations are intended as an application-level
+    calculation model. Verify current EPFO rules and portal
+    specifications before production filing.
     """
 
     gross = max(0, float(gross))
@@ -168,7 +189,10 @@ def validate_employee(
     uan = clean_uan(uan)
     name = str(name).strip()
 
+    # --------------------------------------------------------
     # UAN
+    # --------------------------------------------------------
+
     if not uan:
         errors.append(
             "UAN is required."
@@ -184,13 +208,19 @@ def validate_employee(
             "UAN must be exactly 12 digits."
         )
 
-    # Name
+    # --------------------------------------------------------
+    # NAME
+    # --------------------------------------------------------
+
     if not name:
         errors.append(
             "Member name is required."
         )
 
-    # Gross
+    # --------------------------------------------------------
+    # GROSS WAGES
+    # --------------------------------------------------------
+
     try:
         gross = float(gross)
     except (ValueError, TypeError):
@@ -204,7 +234,10 @@ def validate_employee(
             "Gross wages cannot be negative."
         )
 
-    # EPF wages
+    # --------------------------------------------------------
+    # EPF WAGES
+    # --------------------------------------------------------
+
     try:
         epf_wages = float(epf_wages)
     except (ValueError, TypeError):
@@ -224,7 +257,10 @@ def validate_employee(
             "Please verify the wages."
         )
 
-    # NCP
+    # --------------------------------------------------------
+    # NCP DAYS
+    # --------------------------------------------------------
+
     try:
         ncp_days = int(float(ncp_days))
     except (ValueError, TypeError):
@@ -243,7 +279,10 @@ def validate_employee(
             "NCP days cannot be greater than 31."
         )
 
-    # Refund
+    # --------------------------------------------------------
+    # REFUND
+    # --------------------------------------------------------
+
     try:
         refund = float(refund)
     except (ValueError, TypeError):
@@ -270,8 +309,8 @@ def employee_to_ecr_line(
     """
     Generate ECR-style line.
 
-    Verify exact current EPFO upload field order
-    before production upload.
+    Verify the exact current EPFO upload field order
+    and specification before production upload.
     """
 
     fields = [
@@ -327,6 +366,39 @@ def generate_excel(
             writer,
             index=False,
             sheet_name="ECR Data",
+        )
+
+    return output.getvalue()
+
+
+# ============================================================
+# EXCEL TEMPLATE
+# ============================================================
+
+def generate_import_template() -> bytes:
+
+    template_df = pd.DataFrame(
+        columns=[
+            "UAN",
+            "Member Name",
+            "Gross Wages",
+            "EPF Wages",
+            "NCP Days",
+            "Refund of Advances",
+        ]
+    )
+
+    output = BytesIO()
+
+    with pd.ExcelWriter(
+        output,
+        engine="openpyxl",
+    ) as writer:
+
+        template_df.to_excel(
+            writer,
+            index=False,
+            sheet_name="Employee Import",
         )
 
     return output.getvalue()
@@ -424,11 +496,16 @@ def validate_exit_record(
     errors = []
 
     uan = clean_uan(uan)
+
     reason_code = (
         str(reason_code)
         .strip()
         .upper()
     )
+
+    # --------------------------------------------------------
+    # UAN
+    # --------------------------------------------------------
 
     if not uan:
         errors.append(
@@ -445,10 +522,18 @@ def validate_exit_record(
             "UAN must be exactly 12 digits."
         )
 
+    # --------------------------------------------------------
+    # EXIT DATE
+    # --------------------------------------------------------
+
     if exit_date is None:
         errors.append(
             "Date of Exit is required."
         )
+
+    # --------------------------------------------------------
+    # REASON
+    # --------------------------------------------------------
 
     if reason_code not in EXIT_REASONS.values():
         errors.append(
@@ -497,17 +582,21 @@ def generate_bulk_exit_text(
 
 
 # ============================================================
-# FORM RESET
+# SAFE EMPLOYEE FORM RESET
 # ============================================================
 
 def reset_employee_form():
+    """
+    IMPORTANT:
 
-    st.session_state.uan = ""
-    st.session_state.member_name = ""
-    st.session_state.gross_wages = 0
-    st.session_state.epf_wages = 0
-    st.session_state.ncp_days = 0
-    st.session_state.refund = 0
+    Do not directly modify widget-bound session-state values
+    after the widgets have already been instantiated.
+
+    Instead set a flag and rerun the app. The values are reset
+    at the beginning of the next run, before the widgets exist.
+    """
+
+    st.session_state.employee_form_reset = True
 
 
 # ============================================================
@@ -599,12 +688,33 @@ tab1, tab2, tab3 = st.tabs(
 
 
 # ============================================================
-# TAB 1
+# TAB 1 - ECR EMPLOYEES
 # ============================================================
 
 with tab1:
 
     st.header("➕ Add Employee")
+
+    # --------------------------------------------------------
+    # IMPORTANT FIX
+    #
+    # Reset widget state BEFORE the widgets are instantiated.
+    # --------------------------------------------------------
+
+    if st.session_state.employee_form_reset:
+
+        st.session_state.uan = ""
+        st.session_state.member_name = ""
+        st.session_state.gross_wages = 0
+        st.session_state.epf_wages = 0
+        st.session_state.ncp_days = 0
+        st.session_state.refund = 0
+
+        st.session_state.employee_form_reset = False
+
+    # --------------------------------------------------------
+    # EMPLOYEE FORM
+    # --------------------------------------------------------
 
     with st.form(
         "employee_form"
@@ -696,8 +806,7 @@ with tab1:
 
             existing_uans = {
                 employee["UAN"]
-                for employee
-                in st.session_state.employees
+                for employee in st.session_state.employees
             }
 
             if clean_uan(uan) in existing_uans:
@@ -725,8 +834,10 @@ with tab1:
                     f"{member_name} added successfully."
                 )
 
+                # Set reset flag.
                 reset_employee_form()
 
+                # Rerun.
                 st.rerun()
 
     # --------------------------------------------------------
@@ -778,11 +889,13 @@ with tab1:
         selected = st.selectbox(
             "Select employee to remove",
             options,
+            key="employee_remove_select",
         )
 
         if st.button(
             "🗑️ Remove Employee",
             use_container_width=True,
+            key="remove_employee_button",
         ):
 
             index = options.index(
@@ -913,8 +1026,7 @@ with tab1:
         account_df["Amount"] = (
             account_df["Amount"]
             .apply(
-                lambda x:
-                f"₹{x:,}"
+                lambda x: f"₹{x:,}"
             )
         )
 
@@ -958,8 +1070,7 @@ with tab1:
         reconciliation_df["Amount"] = (
             reconciliation_df["Amount"]
             .apply(
-                lambda x:
-                f"₹{x:,}"
+                lambda x: f"₹{x:,}"
             )
         )
 
@@ -1062,6 +1173,7 @@ with tab2:
                 exit_uan = st.selectbox(
                     "Select UAN",
                     employee_uans,
+                    key="exit_employee_uan",
                 )
 
             else:
@@ -1070,12 +1182,14 @@ with tab2:
                     "UAN",
                     max_chars=12,
                     placeholder="12 digit UAN",
+                    key="manual_exit_uan",
                 )
 
         with col2:
 
             exit_date = st.date_input(
-                "Date of Exit"
+                "Date of Exit",
+                key="exit_date",
             )
 
         with col3:
@@ -1085,6 +1199,7 @@ with tab2:
                 list(
                     EXIT_REASONS.keys()
                 ),
+                key="exit_reason",
             )
 
         reason_code = EXIT_REASONS[
@@ -1174,8 +1289,7 @@ with tab2:
         ] = display_exit_df[
             "Exit Date"
         ].apply(
-            lambda x:
-            x.strftime("%d/%m/%Y")
+            lambda x: x.strftime("%d/%m/%Y")
         )
 
         st.dataframe(
@@ -1199,11 +1313,13 @@ with tab2:
         selected_exit = st.selectbox(
             "Select exit record to remove",
             remove_options,
+            key="exit_remove_select",
         )
 
         if st.button(
             "🗑️ Remove Exit Record",
             use_container_width=True,
+            key="remove_exit_button",
         ):
 
             index = remove_options.index(
@@ -1236,6 +1352,7 @@ with tab2:
             "TXT Preview",
             value=bulk_exit_text,
             height=300,
+            key="bulk_exit_preview",
         )
 
         st.download_button(
@@ -1275,6 +1392,29 @@ with tab3:
         "EPF Wages, NCP Days, Refund of Advances"
     )
 
+    # --------------------------------------------------------
+    # TEMPLATE DOWNLOAD
+    # --------------------------------------------------------
+
+    template_data = generate_import_template()
+
+    st.download_button(
+        "📋 Download Excel Import Template",
+        data=template_data,
+        file_name="EPFO_Employee_Import_Template.xlsx",
+        mime=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        use_container_width=True,
+    )
+
+    st.divider()
+
+    # --------------------------------------------------------
+    # FILE UPLOAD
+    # --------------------------------------------------------
+
     uploaded_file = st.file_uploader(
         "Upload Excel / CSV",
         type=[
@@ -1282,6 +1422,7 @@ with tab3:
             "xls",
             "csv",
         ],
+        key="employee_upload",
     )
 
     if uploaded_file:
@@ -1292,9 +1433,7 @@ with tab3:
                 uploaded_file.name.lower()
             )
 
-            if filename.endswith(
-                ".csv"
-            ):
+            if filename.endswith(".csv"):
 
                 import_df = pd.read_csv(
                     uploaded_file,
@@ -1323,6 +1462,10 @@ with tab3:
                 hide_index=True,
             )
 
+            # ------------------------------------------------
+            # REQUIRED COLUMNS
+            # ------------------------------------------------
+
             required_columns = [
                 "UAN",
                 "Member Name",
@@ -1335,8 +1478,7 @@ with tab3:
             missing_columns = [
                 column
                 for column in required_columns
-                if column
-                not in import_df.columns
+                if column not in import_df.columns
             ]
 
             if missing_columns:
@@ -1356,10 +1498,15 @@ with tab3:
 
             else:
 
+                # --------------------------------------------
+                # IMPORT
+                # --------------------------------------------
+
                 if st.button(
                     "📥 Import Employees",
                     use_container_width=True,
                     type="primary",
+                    key="import_employees_button",
                 ):
 
                     imported = 0
@@ -1372,6 +1519,10 @@ with tab3:
                     }
 
                     import_errors = []
+
+                    # ----------------------------------------
+                    # PROCESS ROWS
+                    # ----------------------------------------
 
                     for row_number, row in import_df.iterrows():
 
@@ -1414,11 +1565,19 @@ with tab3:
                             )
                         )
 
+                        # ------------------------------------
+                        # DUPLICATE UAN
+                        # ------------------------------------
+
                         if row_uan in existing_uans:
 
                             errors.append(
                                 "Duplicate UAN."
                             )
+
+                        # ------------------------------------
+                        # INVALID ROW
+                        # ------------------------------------
 
                         if errors:
 
@@ -1431,6 +1590,10 @@ with tab3:
 
                             continue
 
+                        # ------------------------------------
+                        # CALCULATE EMPLOYEE
+                        # ------------------------------------
+
                         employee = (
                             calculate_employee(
                                 row_uan,
@@ -1442,6 +1605,10 @@ with tab3:
                             )
                         )
 
+                        # ------------------------------------
+                        # ADD EMPLOYEE
+                        # ------------------------------------
+
                         st.session_state.employees.append(
                             employee
                         )
@@ -1451,6 +1618,10 @@ with tab3:
                         )
 
                         imported += 1
+
+                    # ----------------------------------------
+                    # RESULT
+                    # ----------------------------------------
 
                     st.success(
                         f"{imported} employees imported."
@@ -1467,7 +1638,10 @@ with tab3:
                         ):
 
                             for error in import_errors:
-                                st.error(error)
+
+                                st.error(
+                                    error
+                                )
 
                     if imported:
 
